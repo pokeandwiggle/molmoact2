@@ -12,8 +12,25 @@ from olmo.config import BaseConfig, D
 from olmo.nn.flash_attention_api import dispatch_flash_attn
 
 
+def _over_steps(modulation: torch.Tensor) -> torch.Tensor:
+    """Align a modulation with the ``(batch, steps, hidden)`` activations it scales.
+
+    A per-sample modulation ``(batch, hidden)`` — one flow timestep for the whole
+    chunk — broadcasts over the steps. A per-step one ``(batch, steps, hidden)``,
+    from per-step timesteps (see ``SinusoidalTimeEmbedding``), is already aligned.
+    """
+    if modulation.dim() == 2:
+        return modulation.unsqueeze(1)
+    if modulation.dim() == 3:
+        return modulation
+    raise ValueError(
+        "Action expert modulation must be (batch, hidden) or (batch, steps, hidden), "
+        f"got shape {tuple(modulation.shape)}."
+    )
+
+
 def _modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * (1 + _over_steps(scale)) + _over_steps(shift)
 
 
 def _round_up_multiple(value: int, multiple_of: int) -> int:
@@ -421,9 +438,9 @@ class ActionExpertBlock(nn.Module):
             shift_mlp,
             scale_mlp,
             gate_mlp,
-        ) = self.modulation(conditioning).chunk(9, dim=1)
+        ) = self.modulation(conditioning).chunk(9, dim=-1)
 
-        x = x + gate_msa.unsqueeze(1) * self.self_attn(
+        x = x + _over_steps(gate_msa) * self.self_attn(
             _modulate(self.self_norm(x), shift_msa, scale_msa),
             attn_mask=self_attn_mask,
             is_causal=is_causal,
@@ -437,13 +454,13 @@ class ActionExpertBlock(nn.Module):
             if cross_context is None:
                 raise ValueError("cross-attention requires cross_context or cross_kv.")
             attn_kwargs["kv"] = cross_context
-        x = x + gate_mca.unsqueeze(1) * self.cross_attn(
+        x = x + _over_steps(gate_mca) * self.cross_attn(
             _modulate(self.cross_norm(x), shift_mca, scale_mca),
             attn_mask=attn_mask,
             **attn_kwargs,
         )
 
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(
+        x = x + _over_steps(gate_mlp) * self.mlp(
             _modulate(self.ff_norm(x), shift_mlp, scale_mlp)
         )
         return x
@@ -457,25 +474,36 @@ class ActionExpertFinalLayer(nn.Module):
         self.linear = nn.Linear(hidden_size, output_dim)
 
     def forward(self, x: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(conditioning).chunk(2, dim=1)
+        shift, scale = self.modulation(conditioning).chunk(2, dim=-1)
         return self.linear(_modulate(self.norm(x), shift, scale))
 
 
 class SinusoidalTimeEmbedding(nn.Module):
+    """Embed flow timesteps: one per sample ``(batch,)`` or one per action step ``(batch, steps)``.
+
+    Per-step timesteps are what lets a chunk hold an already-committed action prefix at
+    the clean end of the flow (t=1) while the rest of the chunk is still being denoised
+    (real-time chunking, see ``MolmoAct2Config.rtc_delay_probs``). Any other shape is
+    refused rather than collapsed to one timestep, which would silently drop information.
+    """
+
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        if timesteps.dim() > 1:
-            timesteps = timesteps.view(timesteps.shape[0], -1)[:, 0]
+        if timesteps.dim() not in (1, 2):
+            raise ValueError(
+                "Flow timesteps must be (batch,) or (batch, steps), "
+                f"got shape {tuple(timesteps.shape)}."
+            )
         device = timesteps.device
         half_dim = self.dim // 2
         freq = torch.exp(
             torch.arange(half_dim, device=device, dtype=timesteps.dtype)
             * (-math.log(10000.0) / max(half_dim - 1, 1))
         )
-        args = timesteps[:, None] * freq[None, :]
+        args = timesteps[..., None] * freq
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
             emb = F.pad(emb, (0, 1))
@@ -862,6 +890,11 @@ class ActionExpert(nn.Module):
         if seq_len > self.config.max_horizon:
             raise ValueError(
                 f"Action sequence length {seq_len} exceeds configured max_horizon={self.config.max_horizon}"
+            )
+        if tuple(timesteps.shape) not in ((bsz,), (bsz, seq_len)):
+            raise ValueError(
+                f"Flow timesteps must be ({bsz},) — one per sample — or ({bsz}, {seq_len}) — "
+                f"one per action step; got shape {tuple(timesteps.shape)}."
             )
 
         timestep_embed = self.time_embed(timesteps)

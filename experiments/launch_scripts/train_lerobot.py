@@ -239,6 +239,17 @@ def main():
     )
     parser.add_argument("--n_obs_steps", default=1, type=int)
     parser.add_argument("--num_flow_timesteps", default=1, type=int)
+    parser.add_argument(
+        "--rtc_delay_probs",
+        default=None,
+        type=str,
+        metavar="P0,P1,...",
+        help=(
+            "Training-time real-time chunking: comma-separated probabilities that an example "
+            "pins its first i actions as a clean prefix (entry i is delay i). Unset trains "
+            "without RTC. E.g. 0.75,0,0,0,0.25 trains delay 0 at 75%% and delay 4 at 25%%."
+        ),
+    )
     parser.add_argument("--flow_matching_beta_alpha", default=1.0, type=float)
     parser.add_argument("--flow_matching_beta_beta", default=1.5, type=float)
     parser.add_argument("--flow_matching_cutoff", default=1.0, type=float)
@@ -544,6 +555,9 @@ def main():
         if args.num_flow_timesteps < 1:
             raise ValueError("--num_flow_timesteps must be >= 1")
         model_cfg.num_flow_timesteps = args.num_flow_timesteps
+    if args.rtc_delay_probs is not None:
+        # Validated against the horizon by MolmoAct2.__init__, once the model is built.
+        model_cfg.rtc_delay_probs = tuple(float(p) for p in args.rtc_delay_probs.split(","))
     if args.flow_matching_beta_alpha is not None:
         if args.flow_matching_beta_alpha <= 0:
             raise ValueError("--flow_matching_beta_alpha must be > 0")

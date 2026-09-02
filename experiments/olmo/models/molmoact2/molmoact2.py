@@ -63,6 +63,50 @@ def _sample_beta_timesteps(
     return time_offset + scale * samples
 
 
+def _validate_rtc_delay_probs(probs: Sequence[float], *, action_horizon: int) -> None:
+    """Refuse an RTC delay distribution that is not a distribution over ``0..len-1 < horizon``."""
+    if not 2 <= len(probs) <= action_horizon:
+        raise ValueError(
+            f"rtc_delay_probs covers delays 0..len-1 below action_horizon={action_horizon}, "
+            f"so it needs 2..{action_horizon} entries, got {len(probs)}."
+        )
+    if min(probs) < 0:
+        raise ValueError(f"rtc_delay_probs must be non-negative, got {tuple(probs)}.")
+    if probs[-1] <= 0:
+        raise ValueError(
+            "the last entry of rtc_delay_probs must be positive: trailing zeros would hide "
+            f"the largest trained delay, got {tuple(probs)}."
+        )
+    if abs(sum(probs) - 1.0) > 1e-6:
+        raise ValueError(f"rtc_delay_probs must sum to 1, got {sum(probs)}.")
+
+
+def _sample_rtc_delays(
+    probs: Sequence[float], *, batch_size: int, device: torch.device
+) -> torch.Tensor:
+    """Draw one RTC delay per example: the number of leading actions pinned as a clean prefix."""
+    weights = torch.as_tensor(probs, device=device, dtype=torch.float32)
+    return torch.multinomial(weights, batch_size, replacement=True)
+
+
+def _rtc_prefix_mask(delays: torch.Tensor, *, action_horizon: int) -> torch.Tensor:
+    """``(batch, action_horizon)`` bool: True on the action steps pinned as the prefix."""
+    steps = torch.arange(action_horizon, device=delays.device)
+    return steps[None, :] < delays[:, None]
+
+
+def _pin_action_prefix(trajectory: torch.Tensor, action_prefix: torch.Tensor) -> torch.Tensor:
+    """``trajectory`` with its first ``action_prefix.shape[1]`` steps replaced by the prefix."""
+    return torch.cat((action_prefix, trajectory[:, action_prefix.shape[1] :]), dim=1)
+
+
+def _per_step_timesteps(timesteps: torch.Tensor, *, action_horizon: int, delay: int) -> torch.Tensor:
+    """``(batch, action_horizon)`` flow timesteps: the prefix is clean (t=1), the rest is ``timesteps``."""
+    per_step = timesteps[:, None].expand(-1, action_horizon)
+    prefix = torch.arange(action_horizon, device=timesteps.device) < delay
+    return torch.where(prefix[None, :], torch.ones_like(per_step), per_step)
+
+
 @dataclasses.dataclass
 class MolmoAct2Config(Molmo2Config):
     """Configuration for the MolmoAct2 model."""
@@ -115,6 +159,15 @@ class MolmoAct2Config(Molmo2Config):
     flow_matching_beta_beta: float = 1.5
     num_flow_timesteps: int = 1
     """Number of timesteps/noise vectors to use per batch item during training."""
+
+    rtc_delay_probs: Optional[Tuple[float, ...]] = None
+    """Training-time real-time chunking (arXiv 2512.05964): condition each chunk on the
+    actions the robot is already committed to. Entry ``i`` is the probability that a
+    training example pins its first ``i`` actions as a clean prefix (held at t=1 and
+    excluded from the loss), so the served model can continue a chunk mid-execution;
+    ``len - 1`` is the largest trainable delay. ``None`` trains without RTC, bit-identical
+    to before the field existed. At inference ``generate_actions(action_prefix=...)`` pins
+    a prefix whose length must be a delay this distribution gave non-zero mass."""
 
     mask_action_chunk_padding: bool = True
     """Deprecated knob. Time padding from tag horizon to max horizon is always masked in training."""
@@ -235,6 +288,8 @@ class MolmoAct2(Molmo2):
                 "flow_matching_time_scale must be > 0 "
                 f"(got {config.flow_matching_time_scale})."
             )
+        if config.rtc_delay_probs is not None:
+            _validate_rtc_delay_probs(config.rtc_delay_probs, action_horizon=config.action_horizon)
         self._action_start_token_id: Optional[int] = None
         self._action_end_token_id: Optional[int] = None
         self._eos_token_id: Optional[int] = None
@@ -528,8 +583,16 @@ class MolmoAct2(Molmo2):
         generator: Optional[torch.Generator] = None,
         encoder_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        action_prefix: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Generate an action trajectory via flow-matching integration."""
+        """Generate an action trajectory via flow-matching integration.
+
+        ``action_prefix`` — ``(batch, delay, max_action_dim)`` in the model's normalized
+        action space — pins the first ``delay`` steps of the chunk to actions the robot is
+        already committed to (real-time chunking; requires a checkpoint trained with
+        ``rtc_delay_probs`` that gave ``delay`` non-zero mass). ``None`` samples the chunk
+        unconditioned, which is also the mode such a checkpoint trained at delay 0.
+        """
         action_expert = self._require_action_expert()
         if states is None and self.config.state_format in {"continuous", "both"}:
             raise ValueError(
@@ -615,6 +678,12 @@ class MolmoAct2(Molmo2):
             layer_states,
             layer_kv_states,
         )
+        if action_prefix is not None:
+            action_prefix = self.validated_action_prefix(
+                action_prefix,
+                batch_size=batch_size,
+                action_dim_is_pad=action_dim_is_pad,
+            )
         for i in range(steps):
             t = torch.full((batch_size,), i / steps, device=device)
             trajectory = self._mask_action_dim_tensor(
@@ -622,6 +691,12 @@ class MolmoAct2(Molmo2):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=self.config.mask_action_dim_padding,
             )
+            if action_prefix is not None:
+                # Hold the committed actions fixed and mark them as already clean (t=1).
+                trajectory = _pin_action_prefix(trajectory, action_prefix)
+                t = _per_step_timesteps(
+                    t, action_horizon=trajectory.shape[1], delay=action_prefix.shape[1]
+                )
             action_expert_kwargs = dict(
                 encoder_kv_states=layer_kv_states,
                 encoder_attention_mask=encoder_attention_mask,
@@ -643,7 +718,50 @@ class MolmoAct2(Molmo2):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=self.config.mask_action_dim_padding,
             )
+        if action_prefix is not None:
+            # Return the committed actions exactly as given, not the integrator's copy.
+            trajectory = _pin_action_prefix(trajectory, action_prefix)
         return trajectory
+
+    def validated_action_prefix(
+        self,
+        action_prefix: torch.Tensor,
+        *,
+        batch_size: int,
+        action_dim_is_pad: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """The committed prefix this checkpoint can condition on, padded dims zeroed.
+
+        Refuses a prefix the checkpoint never trained for: no ``rtc_delay_probs`` at
+        all, or a prefix length that distribution gave zero mass. Either would serve
+        confidently wrong actions rather than fail.
+        """
+        probs = self.config.rtc_delay_probs
+        if probs is None:
+            raise ValueError(
+                "action_prefix conditioning requires a checkpoint trained with "
+                "rtc_delay_probs; this one was trained without real-time chunking."
+            )
+        expected_shape = (batch_size, None, self.config.max_action_dim)
+        if action_prefix.dim() != 3 or action_prefix.shape[0] != batch_size or (
+            action_prefix.shape[2] != self.config.max_action_dim
+        ):
+            raise ValueError(
+                f"action_prefix must be (batch={batch_size}, delay, "
+                f"max_action_dim={self.config.max_action_dim}), got shape "
+                f"{tuple(action_prefix.shape)} (expected {expected_shape})."
+            )
+        delay = action_prefix.shape[1]
+        if not 1 <= delay <= len(probs) - 1 or probs[delay] <= 0:
+            raise ValueError(
+                f"an action prefix of {delay} steps was never trained: "
+                f"rtc_delay_probs={tuple(probs)} gives delay {delay} no mass."
+            )
+        return self._mask_action_dim_tensor(
+            action_prefix,
+            action_dim_is_pad=action_dim_is_pad,
+            enabled=self.config.mask_action_dim_padding,
+        )
 
     def _run_backbone(
         self,
@@ -1069,6 +1187,17 @@ class MolmoAct2(Molmo2):
         )
         timesteps = timesteps.view(batch_size, num_flow_timesteps)
         t_broadcast = timesteps.view(batch_size, num_flow_timesteps, 1, 1)
+        # Training-time RTC: each example pins its first `delay` actions as a clean
+        # prefix — held at t=1 with the ground-truth actions in place of x_t, and
+        # excluded from the loss — so the model learns to continue a committed chunk.
+        rtc_delays = None
+        rtc_prefix = None
+        if self.config.rtc_delay_probs is not None:
+            rtc_delays = _sample_rtc_delays(
+                self.config.rtc_delay_probs, batch_size=batch_size, device=device
+            )
+            rtc_prefix = _rtc_prefix_mask(rtc_delays, action_horizon=actions.shape[1])
+            rtc_prefix = rtc_prefix.view(batch_size, 1, actions.shape[1], 1)
 
         actions = self._mask_action_dim_tensor(
             actions,
@@ -1090,6 +1219,8 @@ class MolmoAct2(Molmo2):
         )
         actions_expanded = actions.unsqueeze(1).expand(-1, num_flow_timesteps, -1, -1)
         xt = (1.0 - t_broadcast) * noise + t_broadcast * actions_expanded
+        if rtc_prefix is not None:
+            xt = torch.where(rtc_prefix, actions_expanded, xt)
         xt = self._mask_action_dim_tensor(
             xt,
             action_dim_is_pad=action_dim_is_pad,
@@ -1107,7 +1238,13 @@ class MolmoAct2(Molmo2):
             actions.shape[1],
             actions.shape[2],
         )
-        timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps)
+        if rtc_prefix is None:
+            timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps)
+        else:
+            # One flow timestep per action step: the prefix is clean (t=1).
+            per_step = timesteps[:, :, None].expand(-1, -1, actions.shape[1])
+            per_step = torch.where(rtc_prefix[..., 0], torch.ones_like(per_step), per_step)
+            timesteps_flat = per_step.reshape(batch_size * num_flow_timesteps, actions.shape[1])
         chunk_layer_states_expanded = None
         chunk_layer_kv_states_expanded = None
         if chunk_layer_states is not None:
@@ -1229,6 +1366,12 @@ class MolmoAct2(Molmo2):
             action_horizon_is_pad=action_horizon_is_pad,
             enabled=True,
         )
+        if rtc_prefix is not None:
+            # Supervise the postfix only. Rescaling by horizon / (horizon - delay) keeps the
+            # plain mean over the chunk equal to the postfix-normalized mean of the paper.
+            horizon = actions.shape[1]
+            rescale = horizon / (horizon - rtc_delays).to(loss.dtype)
+            loss = loss.masked_fill(rtc_prefix, 0.0) * rescale.view(batch_size, 1, 1, 1)
         loss = self._apply_action_dim_padding_mask(
             loss,
             action_dim_is_pad=action_dim_is_pad,

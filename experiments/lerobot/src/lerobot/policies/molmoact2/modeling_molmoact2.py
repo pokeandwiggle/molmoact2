@@ -416,6 +416,33 @@ def _build_action_dim_is_pad(
     return mask
 
 
+def _pad_action_prefix(
+    action_prefix: torch.Tensor,
+    *,
+    action_dim: int,
+    max_action_dim: int,
+    batch_size: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Widen a normalized ``(batch, delay, action_dim)`` prefix to the model's padded action width."""
+    if action_prefix.dim() != 3 or tuple(action_prefix.shape[:1]) != (int(batch_size),) or (
+        int(action_prefix.shape[2]) != int(action_dim)
+    ):
+        raise ValueError(
+            f"action_prefix must be (batch={int(batch_size)}, delay, action_dim={int(action_dim)}), "
+            f"got shape {tuple(action_prefix.shape)}."
+        )
+    if not torch.isfinite(action_prefix).all():
+        raise ValueError("action_prefix must be finite.")
+    padded = torch.zeros(
+        (int(batch_size), int(action_prefix.shape[1]), int(max_action_dim)),
+        device=device,
+        dtype=torch.float32,
+    )
+    padded[:, :, : int(action_dim)] = action_prefix.to(device=device, dtype=torch.float32)
+    return padded
+
+
 def _resolve_discrete_action_processor_path(
     processor_name_or_path: str,
     *,
@@ -515,6 +542,8 @@ class MolmoAct2InferenceResult:
     actions: Optional[torch.Tensor] = None
     depth_bins: Optional[torch.Tensor] = None
     generated_token_ids: Optional[torch.Tensor] = None
+    normalized_actions: Optional[torch.Tensor] = None
+    """``actions`` before unnormalization — the space an ``action_prefix`` is given in."""
 
 
 class MolmoAct2Policy(PreTrainedPolicy):
@@ -1293,6 +1322,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         norm_tag: Optional[str] = None,
         num_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        action_prefix: Optional[torch.Tensor] = None,
     ) -> MolmoAct2InferenceResult:
         style = self._resolve_style_for_inference(handles)
         generated_token_ids: Optional[torch.Tensor] = None
@@ -1307,6 +1337,24 @@ class MolmoAct2Policy(PreTrainedPolicy):
         if resolved_action_dim is not None:
             action_dim_is_pad = _build_action_dim_is_pad(
                 action_dim=resolved_action_dim,
+                max_action_dim=handles.max_action_dim,
+                batch_size=batch_size,
+                device=handles.device,
+            )
+        if action_prefix is not None:
+            if (
+                handles.inference_action_mode != "continuous"
+                or style_uses_depth_output(style)
+                or not style_uses_action_output(style)
+            ):
+                raise ValueError(
+                    "action_prefix conditioning is only implemented for continuous action "
+                    f"inference without depth styles, got inference_action_mode="
+                    f"{handles.inference_action_mode!r}, style={style!r}."
+                )
+            action_prefix = _pad_action_prefix(
+                action_prefix,
+                action_dim=int(resolved_action_dim),
                 max_action_dim=handles.max_action_dim,
                 batch_size=batch_size,
                 device=handles.device,
@@ -1353,6 +1401,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
                     action_dim_is_pad=action_dim_is_pad,
                     num_steps=resolved_num_steps,
                     generator=generator,
+                    action_prefix=action_prefix,
                 )
                 action_chunk = _slice_action_dim(action_chunk, int(resolved_action_dim))
                 return MolmoAct2InferenceResult(style=style, actions=action_chunk)
@@ -1417,9 +1466,22 @@ class MolmoAct2Policy(PreTrainedPolicy):
         num_steps: Optional[int] = None,
         n_action_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        action_prefix: Optional[torch.Tensor] = None,
     ) -> MolmoAct2InferenceResult:
+        """Run one inference on ``observations``.
+
+        ``action_prefix`` — ``(batch, delay, action_dim)`` in the checkpoint's normalized
+        action space, i.e. the space ``result.actions`` is in before unnormalization —
+        pins the first ``delay`` steps of the chunk to actions the robot is already
+        executing (real-time chunking). Native checkpoints trained with
+        ``rtc_delay_probs`` only.
+        """
         hf_backend = getattr(self, "_hf_backend", None)
         if hf_backend is not None:
+            if action_prefix is not None:
+                raise NotImplementedError(
+                    "action_prefix conditioning is only implemented for native checkpoints."
+                )
             hf_result = hf_backend.generate_inference_result_from_observations(
                 observations if isinstance(observations, list) else [observations],
                 norm_tag=norm_tag,
@@ -1462,6 +1524,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             norm_tag=norm_tag,
             num_steps=num_steps,
             generator=generator,
+            action_prefix=action_prefix,
         )
         self._last_model_inference_s = float(inference_elapsed)
         self._last_model_inference_calls = 1
@@ -1487,6 +1550,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
                 resolved_norm_tag,
             )
             result.actions = _slice_action_dim(result.actions, resolved_action_dim)
+            result.normalized_actions = result.actions
             if handles.robot_processor is not None:
                 result.actions = handles.robot_processor.unnormalize_action(
                     result.actions,
@@ -1502,6 +1566,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
         num_steps: Optional[int] = None,
         n_action_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        action_prefix: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor], str]:
         result = self.generate_inference_result_from_observations(
             observations,
@@ -1509,6 +1574,7 @@ class MolmoAct2Policy(PreTrainedPolicy):
             num_steps=num_steps,
             n_action_steps=n_action_steps,
             generator=generator,
+            action_prefix=action_prefix,
         )
         if result.actions is None:
             raise ValueError(f"Style '{result.style}' does not produce actions.")
