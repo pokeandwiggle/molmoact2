@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 import debugpy
 
 from omegaconf import omegaconf, OmegaConf
+from torch.distributed.fsdp import ShardingStrategy
 from launch_scripts.data_mixtures import TAG_METADATA_BY_TAG
 from launch_scripts.lerobot_utils.env import (
     _prepare_subprocess_environment_for_training,
@@ -87,6 +88,16 @@ from olmo.util import (
 )
 
 log = logging.getLogger(__name__)
+
+# Only these two are supported: every trainable module frozen or trained goes
+# through fully_shard() as one full-model pass (FULL_SHARD) or none at all
+# (NO_SHARD, replicate). LoRA is injected after that sharding pass, into the
+# already-sharded modules, so a partial-sharding strategy can't distinguish
+# frozen from trainable weight within a module and isn't offered here.
+_SHARDING_STRATEGIES = {
+    "full_shard": ShardingStrategy.FULL_SHARD,
+    "no_shard": ShardingStrategy.NO_SHARD,
+}
 
 
 def get_model(checkpoint, model, frame_loading_backend: str = "torchcodec_exact"):
@@ -203,6 +214,18 @@ def main():
     )
     parser.add_argument("--device_batch_size", default=2, type=int)
     parser.add_argument("--global_batch_size", default=128, type=int)
+    parser.add_argument(
+        "--sharding_strategy",
+        choices=sorted(_SHARDING_STRATEGIES),
+        default="full_shard",
+        help=(
+            "FSDP2 sharding strategy. 'full_shard' (default) matches today's "
+            "behavior. 'no_shard' replicates the full model on every rank "
+            "instead of sharding it -- data-parallel, not memory-saving; only "
+            "sensible when the backbone is frozen and per-GPU memory isn't "
+            "the constraint."
+        ),
+    )
     parser.add_argument("--log_interval", default=20, type=int)
     parser.add_argument("--max_loss_examples", default=2048, type=int)
     parser.add_argument("--max_inf_eval_examples", default=1280, type=int)
@@ -866,7 +889,7 @@ def main():
             alpha_f=0.1,
             warmup_min_lr=0.0
         ),
-        fsdp=FSDPConfig(fsdp2=True),
+        fsdp=FSDPConfig(fsdp2=True, sharding_strategy=_SHARDING_STRATEGIES[args.sharding_strategy]),
         load_path=None,
         initial_model_checkpoint=checkpoint,
         save_interval=2000,
