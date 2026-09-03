@@ -542,8 +542,6 @@ class MolmoAct2InferenceResult:
     actions: Optional[torch.Tensor] = None
     depth_bins: Optional[torch.Tensor] = None
     generated_token_ids: Optional[torch.Tensor] = None
-    normalized_actions: Optional[torch.Tensor] = None
-    """``actions`` before unnormalization — the space an ``action_prefix`` is given in."""
 
 
 class MolmoAct2Policy(PreTrainedPolicy):
@@ -1471,10 +1469,9 @@ class MolmoAct2Policy(PreTrainedPolicy):
         """Run one inference on ``observations``.
 
         ``action_prefix`` — ``(batch, delay, action_dim)`` in the checkpoint's normalized
-        action space, i.e. the space ``result.actions`` is in before unnormalization —
-        pins the first ``delay`` steps of the chunk to actions the robot is already
-        executing (real-time chunking). Native checkpoints trained with
-        ``rtc_delay_probs`` only.
+        action space (``robot_processor.normalize_action``) — pins the first ``delay``
+        steps of the chunk to actions the robot is already executing (real-time
+        chunking). Native checkpoints trained with ``rtc_delay_probs`` only.
         """
         hf_backend = getattr(self, "_hf_backend", None)
         if hf_backend is not None:
@@ -1550,7 +1547,6 @@ class MolmoAct2Policy(PreTrainedPolicy):
                 resolved_norm_tag,
             )
             result.actions = _slice_action_dim(result.actions, resolved_action_dim)
-            result.normalized_actions = result.actions
             if handles.robot_processor is not None:
                 result.actions = handles.robot_processor.unnormalize_action(
                     result.actions,
