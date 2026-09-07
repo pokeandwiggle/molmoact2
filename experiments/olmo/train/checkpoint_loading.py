@@ -4,7 +4,6 @@ import faulthandler
 import json
 import logging
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
@@ -851,17 +850,6 @@ def load_unsharded_checkpoint_allowing_missing_action_expert(path: str, model: t
                 strict_restore=strict_restore,
                 state_keys=len(filtered_state),
             )
-            _new_emb = getattr(getattr(model, "transformer", None), "wte", None)
-            _new_emb = getattr(_new_emb, "new_embedding", None) if _new_emb is not None else None
-            print(
-                f"[PAW-1809 DEBUG] pre-set_model_state_dict "
-                f"new_embedding.requires_grad={_new_emb.requires_grad if _new_emb is not None else 'N/A'} "
-                f"id={id(_new_emb) if _new_emb is not None else 'N/A'} "
-                f"'wte.new_embedding' in filtered_state={'wte.new_embedding' in filtered_state} "
-                f"'transformer.wte.new_embedding' in filtered_state={'transformer.wte.new_embedding' in filtered_state}",
-                file=sys.stderr,
-                flush=True,
-            )
             set_state_start = time.perf_counter()
             kv_errors = dist_cp_sd.set_model_state_dict(
                 model=model,
@@ -878,18 +866,6 @@ def load_unsharded_checkpoint_allowing_missing_action_expert(path: str, model: t
                 elapsed_s=f"{time.perf_counter() - set_state_start:0.3f}",
                 missing_keys=len(getattr(kv_errors, "missing_keys", [])) if kv_errors is not None else 0,
                 unexpected_keys=len(getattr(kv_errors, "unexpected_keys", [])) if kv_errors is not None else 0,
-            )
-            _new_emb_post = getattr(getattr(model, "transformer", None), "wte", None)
-            _new_emb_post = (
-                getattr(_new_emb_post, "new_embedding", None) if _new_emb_post is not None else None
-            )
-            print(
-                f"[PAW-1809 DEBUG] post-set_model_state_dict "
-                f"new_embedding.requires_grad={_new_emb_post.requires_grad if _new_emb_post is not None else 'N/A'} "
-                f"id={id(_new_emb_post) if _new_emb_post is not None else 'N/A'} "
-                f"missing_keys={sorted(getattr(kv_errors, 'missing_keys', []))}",
-                file=sys.stderr,
-                flush=True,
             )
 
             if kv_errors is not None and len(kv_errors.unexpected_keys) > 0:

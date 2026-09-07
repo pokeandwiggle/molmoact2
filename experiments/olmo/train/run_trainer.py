@@ -423,10 +423,23 @@ def run_trainer(cfg: TrainConfig) -> None:
             transformer_targets = _collect_linear_leaf_names(model.transformer)
             if transformer_targets:
                 log.info("LoRA transformer target modules: %s", transformer_targets)
+                import sys as _sys
+                print(
+                    f"[PAW-1809 DEBUG] pre-get_peft_model(transformer) "
+                    f"new_embedding.requires_grad={model.transformer.wte.new_embedding.requires_grad} "
+                    f"id={id(model.transformer.wte.new_embedding)}",
+                    file=_sys.stderr, flush=True,
+                )
                 model.transformer = _wrap_with_lora(
                     model.transformer,
                     target_modules=transformer_targets,
                     label="transformer",
+                )
+                print(
+                    f"[PAW-1809 DEBUG] post-get_peft_model(transformer) "
+                    f"new_embedding.requires_grad={model.transformer.wte.new_embedding.requires_grad} "
+                    f"id={id(model.transformer.wte.new_embedding)}",
+                    file=_sys.stderr, flush=True,
                 )
             else:
                 log.warning("No transformer linear modules found; skipping LoRA injection for transformer.")
