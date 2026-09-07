@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
-from torch.distributed.fsdp import fully_shard
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 
 from olmo.config import BaseConfig, D
 from olmo.nn.flash_attention_api import dispatch_flash_attn
@@ -979,4 +979,4 @@ class ActionExpert(nn.Module):
             raise NotImplementedError(self.config.compile)
 
     def apply_fsdp2(self, **fully_shard_kwargs):
-        fully_shard(self, **fully_shard_kwargs)
+        apply_fsdp2_wrap(self, **fully_shard_kwargs)

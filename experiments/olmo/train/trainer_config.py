@@ -234,9 +234,9 @@ class FSDPConfig(BaseConfig):
                 (num_model_replicas, get_world_size() // num_model_replicas),
                 mesh_dim_names=("replicate", "shard"),
             )
-            return dict(mesh=mesh, mp_policy=mp)
+            return dict(mesh=mesh, mp_policy=mp, sharding_strategy=self.sharding_strategy)
 
-        return dict(mp_policy=mp)
+        return dict(mp_policy=mp, sharding_strategy=self.sharding_strategy)
 
 
 class BatchDivisor(StrEnum):

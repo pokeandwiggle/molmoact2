@@ -19,7 +19,7 @@ from olmo.preprocessing.image_preprocessor import ImagePreprocessor, normalize_i
 from olmo.torch_util import freeze_module
 from olmo.util import resource_path
 from torch.nn import functional as F
-from torch.distributed.fsdp import fully_shard
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 from torch.distributed.nn.functional import all_gather as differentiable_all_gather
 
 log = logging.getLogger(__name__)
@@ -355,17 +355,17 @@ class MolmoVisionBackbone(nn.Module):
         self.image_vit.apply_fsdp2(**kwargs)
         if self.image_pooling_2d is not None:
             if not self.config.use_deepstack or self.config.share_connector:
-                fully_shard(self.image_pooling_2d, **kwargs)
+                apply_fsdp2_wrap(self.image_pooling_2d, **kwargs)
             else:
                 for module in self.image_pooling_2d:
-                    fully_shard(module, **kwargs)
+                    apply_fsdp2_wrap(module, **kwargs)
         if not self.config.use_deepstack or self.config.share_connector:
-            fully_shard(self.image_projector, **kwargs)
+            apply_fsdp2_wrap(self.image_projector, **kwargs)
         else:
             for module in self.image_projector:
-                fully_shard(module, **kwargs)
+                apply_fsdp2_wrap(module, **kwargs)
         # For any remaining parameters in `self`, like the pad embed
-        fully_shard(self, **kwargs)
+        apply_fsdp2_wrap(self, **kwargs)
 
     def apply_activation_checkpointing(self):
         self.image_vit.apply_activation_checkpointing()

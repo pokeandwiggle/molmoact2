@@ -41,7 +41,7 @@ from olmo.nn.flash_attention_api import (
     dispatch_flash_attn
 )
 
-from torch.distributed.fsdp import fully_shard
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 
 
 log = logging.getLogger(__name__)
@@ -824,12 +824,12 @@ class Llm(nn.Module):
 
     def apply_fsdp2(self, **kwargs):
         for block in self.blocks:
-            fully_shard(block, **kwargs)
-        fully_shard(self.wte, **kwargs)
+            apply_fsdp2_wrap(block, **kwargs)
+        apply_fsdp2_wrap(self.wte, **kwargs)
         if self.config.weight_tying:
-            fully_shard([self.ln_f], **kwargs)
+            apply_fsdp2_wrap([self.ln_f], **kwargs)
         else:
-            fully_shard([self.ff_out, self.ln_f], **kwargs)
+            apply_fsdp2_wrap([self.ff_out, self.ln_f], **kwargs)
 
     def apply_activation_checkpointing(self):
         fn = llm_activation_checkpoint_function(self.config)

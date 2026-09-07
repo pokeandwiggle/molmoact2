@@ -20,7 +20,7 @@ from olmo.preprocessing.image_preprocessor import ImagePreprocessor
 from olmo.torch_util import get_global_rank
 from olmo.util import resource_path
 
-from torch.distributed.fsdp import fully_shard
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 import torch.distributed.checkpoint.state_dict as dist_cp_sd
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -491,8 +491,8 @@ class VisionTransformer(nn.Module):
 
     def apply_fsdp2(self, *args, **kwargs):
         for block in self.transformer.resblocks:
-            fully_shard(block, *args, **kwargs)
-        fully_shard(self, *args, **kwargs)
+            apply_fsdp2_wrap(block, *args, **kwargs)
+        apply_fsdp2_wrap(self, *args, **kwargs)
 
     def apply_activation_checkpointing(self):
         if self.config.activation_checkpointing:
@@ -633,8 +633,8 @@ class SiglipVisionTransformer(nn.Module):
 
     def apply_fsdp2(self, *args, **kwargs):
         for block in self.transformer.resblocks:
-            fully_shard(block, *args, **kwargs)
-        fully_shard(self, *args, **kwargs)
+            apply_fsdp2_wrap(block, *args, **kwargs)
+        apply_fsdp2_wrap(self, *args, **kwargs)
 
     def add_pos_emb(self, x: torch.Tensor, patch_num: int) -> torch.Tensor:
         pos_emb = self.positional_embedding
@@ -712,8 +712,8 @@ class DinoVisionTransformer(nn.Module):
 
     def full_shard(self, *args, **kwargs):
         for block in self.transformer.resblocks:
-            fully_shard(block, *args, **kwargs)
-        fully_shard(self, *args, **kwargs)
+            apply_fsdp2_wrap(block, *args, **kwargs)
+        apply_fsdp2_wrap(self, *args, **kwargs)
 
     def add_pos_emb(self, x: torch.Tensor, patch_num: int) -> torch.Tensor:
         cls_emb = self.positional_embedding[0:1]

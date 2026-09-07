@@ -15,7 +15,7 @@ from olmo.nn.image_vit import ResidualAttentionBlock as BaseResidualAttentionBlo
 
 from olmo.torch_util import get_global_rank
 
-from torch.distributed.fsdp import fully_shard
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 
 from olmo.preprocessing.multimodal_preprocessor import MultimodalTypes
 
@@ -1045,10 +1045,10 @@ class SiglipVisionTransformer(BaseSiglipViT):
 
     def apply_fsdp2(self, *args, **kwargs):
         for block in self.transformer.resblocks:
-            fully_shard(block, *args, **kwargs)
+            apply_fsdp2_wrap(block, *args, **kwargs)
         if self.config.prune and self.config.prune_method == "scorer":
-            fully_shard(self.transformer.temporal_token_scorer, *args, **kwargs)
-        fully_shard(self, *args, **kwargs)
+            apply_fsdp2_wrap(self.transformer.temporal_token_scorer, *args, **kwargs)
+        apply_fsdp2_wrap(self, *args, **kwargs)
 
     def forward(self, x: torch.Tensor, patch_num: int = None, pooled_patches_idx: torch.Tensor = None, num_images=None, multimodal_type=None) -> List[torch.Tensor]:
         """
