@@ -47,6 +47,14 @@ def apply_fsdp2_wrap(module: Any, **kwargs: Any) -> Any:
     if strategy == ShardingStrategy.NO_SHARD:
         kwargs.pop("mp_policy", None)
         if isinstance(module, nn.Module):
+            import sys
+
+            print(
+                f"[PAW-1809 DEBUG] apply_fsdp2_wrap single module={type(module).__name__} "
+                f"params={[(n, p.requires_grad) for n, p in module.named_parameters(recurse=True)]}",
+                file=sys.stderr,
+                flush=True,
+            )
             if not _has_trainable_params(module):
                 return module
             return replicate(module, **kwargs)
