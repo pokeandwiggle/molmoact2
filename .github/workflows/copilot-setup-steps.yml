@@ -10,7 +10,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout code (with LFS)
+      # Not lfs: true. Forking a repo copies LFS pointer files but not the
+      # underlying objects into the fork's own LFS store, so this fork has
+      # none -- an LFS-enabled checkout 404s fetching every tracked object
+      # (experiments/lerobot/tests/artifacts/...), even for a diff that
+      # never touches them. Plain checkout leaves those paths as pointer
+      # text, which is fine: nothing under review depends on their content.
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          lfs: true
