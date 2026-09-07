@@ -20,41 +20,11 @@ a no-op change in behavior, not a gap.
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
 from torch import nn
 from torch.distributed._composable.replicate import replicate
 from torch.distributed.fsdp import ShardingStrategy, fully_shard
-from torch.nn.parallel.distributed import DistributedDataParallel
-
-# DEBUG, temporary: print each parameter's live requires_grad + identity at the
-# exact moment DDP's own constructor runs (both wte's own replicate() instance
-# and the top-level model's), to pin down why a param that reads
-# requires_grad=True at apply_fsdp2_wrap() call time reads False by the time
-# replicate()'s deferred lazy_init() constructs DistributedDataParallel.
-_orig_ddp_init = DistributedDataParallel.__init__
-
-
-def _debug_ddp_init(self, module, *args, **kwargs):
-    if isinstance(module, nn.ParameterList):
-        print(
-            f"[PAW-1809 DEBUG] DDP.__init__ called with ParameterList of "
-            f"{len(module)} params:",
-            file=sys.stderr,
-            flush=True,
-        )
-        for i, p in enumerate(module):
-            print(
-                f"[PAW-1809 DEBUG]   [{i}] shape={tuple(p.shape)} "
-                f"requires_grad={p.requires_grad} id={id(p)}",
-                file=sys.stderr,
-                flush=True,
-            )
-    return _orig_ddp_init(self, module, *args, **kwargs)
-
-
-DistributedDataParallel.__init__ = _debug_ddp_init
 
 
 def _has_trainable_params(module: nn.Module) -> bool:
@@ -77,13 +47,6 @@ def apply_fsdp2_wrap(module: Any, **kwargs: Any) -> Any:
     if strategy == ShardingStrategy.NO_SHARD:
         kwargs.pop("mp_policy", None)
         if isinstance(module, nn.Module):
-            if type(module).__name__ == "Embedding":
-                print(
-                    f"[PAW-1809 DEBUG] apply_fsdp2_wrap(wrap-time) module=Embedding "
-                    f"params={[(n, p.requires_grad, id(p)) for n, p in module.named_parameters(recurse=True)]}",
-                    file=sys.stderr,
-                    flush=True,
-                )
             if not _has_trainable_params(module):
                 return module
             return replicate(module, **kwargs)
