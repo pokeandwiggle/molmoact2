@@ -1,0 +1,16 @@
+name: Copilot Setup Steps
+
+on: workflow_dispatch
+
+jobs:
+  # Job name is load-bearing: Copilot's coding agent only runs a job named
+  # exactly `copilot-setup-steps` to prepare its sandbox before a session.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code (with LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
