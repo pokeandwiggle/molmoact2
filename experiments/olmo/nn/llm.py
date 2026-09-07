@@ -773,28 +773,12 @@ class Llm(nn.Module):
             block.reset_parameters()
 
     def reset_with_pretrained_weights(self) -> None:
-        import sys
-
-        print(
-            f"[PAW-1809 DEBUG] reset_with_pretrained_weights ENTRY "
-            f"new_embedding.requires_grad={self.wte.new_embedding.requires_grad} "
-            f"id={id(self.wte.new_embedding)}",
-            file=sys.stderr,
-            flush=True,
-        )
         if self.config.init_path is None:
             self.reset_parameters()
         else:
             t0 = time.perf_counter()
             log.info(f"Loading LLM parameters from {self.config.init_path}")
             is_sharded = hasattr(self.blocks[0], "unshard")
-            print(
-                f"[PAW-1809 DEBUG] reset_with_pretrained_weights is_sharded={is_sharded} "
-                f"new_embedding.requires_grad={self.wte.new_embedding.requires_grad} "
-                f"id={id(self.wte.new_embedding)}",
-                file=sys.stderr,
-                flush=True,
-            )
             device = self.ln_f.weight.device
 
             parent, name = self.config.init_path.rstrip("/").rsplit("/", 1)
@@ -831,28 +815,12 @@ class Llm(nn.Module):
             else:
                 key_errors = self.load_state_dict(state_dict, strict=False)
 
-            print(
-                f"[PAW-1809 DEBUG] reset_with_pretrained_weights POST-LOAD "
-                f"new_embedding.requires_grad={self.wte.new_embedding.requires_grad} "
-                f"id={id(self.wte.new_embedding)} missing={key_errors.missing_keys}",
-                file=sys.stderr,
-                flush=True,
-            )
-
             assert len(key_errors.unexpected_keys) == 0
             assert set(key_errors.missing_keys) <= {"wte.new_embedding"}
             log.info(f"Done in {time.perf_counter()-t0:0.1f} seconds")
 
             if self.config.additional_vocab_size is not None:
                 nn.init.normal_(self.wte.new_embedding, std=self.config.new_embedding_init_range)
-
-            print(
-                f"[PAW-1809 DEBUG] reset_with_pretrained_weights EXIT "
-                f"new_embedding.requires_grad={self.wte.new_embedding.requires_grad} "
-                f"id={id(self.wte.new_embedding)}",
-                file=sys.stderr,
-                flush=True,
-            )
 
     def apply_fsdp2(self, **kwargs):
         for block in self.blocks:
