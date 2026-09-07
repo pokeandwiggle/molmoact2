@@ -36,6 +36,7 @@ from olmo.models.molmo2.molmo2_preprocessor import (
     VideoPreprocessor,
 )
 from olmo.nn.beam_search import BeamSearch, Constraint, FinalSequenceScorer, Sampler
+from olmo.nn.fsdp2_wrap import apply_fsdp2_wrap
 from olmo.nn.image_vit import ResidualAttentionBlock, VisionTransformer
 from olmo.nn.legacy_config import convert_legacy_config
 from olmo.preprocessing.multimodal_collator import MMCollator
@@ -278,7 +279,7 @@ class Molmo2(ModelBase):
         action_expert = getattr(self, "action_expert", None)
         if action_expert is not None:
             action_expert.apply_fsdp2(**fully_shard_kwargs)
-        fully_shard(self, **fully_shard_kwargs)
+        apply_fsdp2_wrap(self, **fully_shard_kwargs)
 
     def apply_fsdp2_v2(
         self,
