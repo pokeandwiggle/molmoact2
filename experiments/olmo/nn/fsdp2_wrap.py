@@ -7,6 +7,15 @@ compute precision under it comes from the trainer's own
 ``torch.autocast(...)`` around the forward pass, not from an FSDP2-specific
 mixed-precision policy, so dropping ``mp_policy`` here is a deliberate
 omission, not an oversight.
+
+``replicate()`` also refuses a module with no trainable parameters --
+DDP-style gradient sync has nothing to do for one, and it raises rather
+than no-op. ``fully_shard()`` has no such restriction; it shards a frozen
+module's parameters same as any other. Partial fine-tuning (LoRA, frozen
+VLM backbone) routinely wraps frozen submodules this way, so under
+NO_SHARD those are left unwrapped instead -- a frozen module contributes
+no gradients to synchronize either way, so skipping replicate() on it is
+a no-op change in behavior, not a gap.
 """
 
 from __future__ import annotations
@@ -16,6 +25,10 @@ from typing import Any
 from torch import nn
 from torch.distributed._composable.replicate import replicate
 from torch.distributed.fsdp import ShardingStrategy, fully_shard
+
+
+def _has_trainable_params(module: nn.Module) -> bool:
+    return any(p.requires_grad for p in module.parameters())
 
 
 def apply_fsdp2_wrap(module: Any, **kwargs: Any) -> Any:
@@ -34,6 +47,10 @@ def apply_fsdp2_wrap(module: Any, **kwargs: Any) -> Any:
     if strategy == ShardingStrategy.NO_SHARD:
         kwargs.pop("mp_policy", None)
         if isinstance(module, nn.Module):
+            if not _has_trainable_params(module):
+                return module
             return replicate(module, **kwargs)
-        return [replicate(m, **kwargs) for m in module]
+        return [
+            replicate(m, **kwargs) if _has_trainable_params(m) else m for m in module
+        ]
     return fully_shard(module, **kwargs)
