@@ -404,6 +404,27 @@ def run_trainer(cfg: TrainConfig) -> None:
         ) -> torch.nn.Module:
             nonlocal compat_logged
 
+            # get_peft_model() freezes every parameter of base_module, then selectively
+            # unfreezes only the LoRA adapter layers it injects. Freezing the base weight
+            # of a LoRA-targeted Linear is correct -- that's what LoRA means, train the
+            # delta, not the base -- so those are excluded here. What has no such excuse
+            # is a parameter PEFT swept up only because it happens to be a descendant of
+            # base_module, never itself LoRA-targeted (e.g. wte.new_embedding, added-token
+            # embeddings deliberately left trainable by the earlier manual freeze logic).
+            # Captured by identity, not name: PEFT nests the wrapped module under its own
+            # container, which changes named_parameters()'s dotted paths but not the
+            # underlying parameter objects, and object identity is what survives that.
+            lora_targeted_ids: set[int] = set()
+            for name, sub in base_module.named_modules():
+                leaf = name.rsplit(".", 1)[-1]
+                if leaf in target_modules and isinstance(sub, torch.nn.Linear):
+                    lora_targeted_ids.update(id(p) for p in sub.parameters())
+            trainable_before = {
+                id(p)
+                for p in base_module.parameters()
+                if p.requires_grad and id(p) not in lora_targeted_ids
+            }
+
             with peft_fsdp2_linear_shape_compat(enabled=cfg.fsdp.fsdp2) as compat_active:
                 if compat_active and not compat_logged:
                     log.info(
@@ -412,6 +433,16 @@ def run_trainer(cfg: TrainConfig) -> None:
                     )
                     compat_logged = True
                 wrapped_module = get_peft_model(base_module, _build_lora_config(target_modules))
+
+            restored = [p for p in wrapped_module.parameters() if id(p) in trainable_before and not p.requires_grad]
+            for p in restored:
+                p.requires_grad_(True)
+            if restored:
+                log.info(
+                    "Restored requires_grad=True on %d parameter(s) %s LoRA injection silently froze.",
+                    len(restored),
+                    label,
+                )
 
             validate_post_fsdp2_lora_shapes(wrapped_module, label)
             return wrapped_module
