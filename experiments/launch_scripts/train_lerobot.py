@@ -212,6 +212,7 @@ def main():
     parser.add_argument("--vit_learning_rate", default=5e-6, type=float)
     parser.add_argument("--llm_learning_rate", default=1e-5, type=float)
     parser.add_argument("--action_expert_learning_rate", default=1e-4, type=float)
+    parser.add_argument("--alpha_f", default=0.1, type=float)
     parser.add_argument(
         "--max_action_dim",
         default=None,
@@ -877,7 +878,7 @@ def main():
             vit_t_warmup=200,
             llm_t_warmup=200,
             action_expert_t_warmup=200,
-            alpha_f=0.1,
+            alpha_f=args.alpha_f,
             warmup_min_lr=0.0
         ),
         fsdp=FSDPConfig(fsdp2=True),
