@@ -213,6 +213,10 @@ def main():
     parser.add_argument("--llm_learning_rate", default=1e-5, type=float)
     parser.add_argument("--action_expert_learning_rate", default=1e-4, type=float)
     parser.add_argument("--alpha_f", default=0.1, type=float)
+    parser.add_argument("--connector_t_warmup", default=200, type=int)
+    parser.add_argument("--vit_t_warmup", default=200, type=int)
+    parser.add_argument("--llm_t_warmup", default=200, type=int)
+    parser.add_argument("--action_expert_t_warmup", default=200, type=int)
     parser.add_argument(
         "--max_action_dim",
         default=None,
@@ -874,10 +878,10 @@ def main():
         ),
         scheduler=SchedulerConfig(
             name=SchedulerType.multimodal,
-            connector_t_warmup=200,
-            vit_t_warmup=200,
-            llm_t_warmup=200,
-            action_expert_t_warmup=200,
+            connector_t_warmup=args.connector_t_warmup,
+            vit_t_warmup=args.vit_t_warmup,
+            llm_t_warmup=args.llm_t_warmup,
+            action_expert_t_warmup=args.action_expert_t_warmup,
             alpha_f=args.alpha_f,
             warmup_min_lr=0.0
         ),
