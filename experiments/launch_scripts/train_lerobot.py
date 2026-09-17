@@ -313,6 +313,18 @@ def main():
         help="Robot state/action normalization mode. Use 'none' to disable normalization.",
     )
     parser.add_argument(
+        "--norm_clip",
+        type=_parse_bool_arg,
+        default=True,
+        metavar="BOOL",
+        help=(
+            "If true, saturate normalized state and action values at [-1, 1] under the bounded "
+            "norm_modes (min_max, q01_q99, q10_q90), in training targets and at inference. "
+            "If false, values beyond the fitted band stay proportional, so the tails train and "
+            "serve as recorded. No effect under mean_std or none."
+        ),
+    )
+    parser.add_argument(
         "--action_format",
         default="continuous",
         choices=["continuous", "discrete", "both"],
@@ -759,6 +771,7 @@ def main():
             tag_metadata=lerobot_tag_metadata_by_tag,
             repo_to_tag=repo_to_tag,
             norm_mode=args.norm_mode,
+            norm_clip=args.norm_clip,
             data_formatter_add_setup_tokens=args.add_setup_tokens,
             data_formatter_add_control_tokens=args.add_control_tokens,
         )

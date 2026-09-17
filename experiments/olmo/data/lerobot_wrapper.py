@@ -3132,6 +3132,7 @@ def build_lerobot_dataset(
 
     stats_by_tag_env = _get_env_json("LEROBOT_STATS_BY_TAG")
     norm_mode = _get_env_str("LEROBOT_NORM_MODE", "min_max")
+    norm_clip = _get_env_bool("LEROBOT_NORM_CLIP", True)
     add_setup_tokens = _get_env_bool("LEROBOT_ADD_SETUP_TOKENS", False)
     add_control_tokens = _get_env_bool("LEROBOT_ADD_CONTROL_TOKENS", False)
     if use_annotated_task is None:
@@ -3192,6 +3193,7 @@ def build_lerobot_dataset(
             tag_metadata=tag_metadata_env if isinstance(tag_metadata_env, dict) else {},
             repo_to_tag=repo_to_tag_env if isinstance(repo_to_tag_env, dict) else {},
             norm_mode=norm_mode,
+            norm_clip=norm_clip,
             data_formatter_add_setup_tokens=add_setup_tokens,
             data_formatter_add_control_tokens=add_control_tokens,
         )

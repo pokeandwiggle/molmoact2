@@ -88,6 +88,7 @@ def _set_lerobot_environment_from_args(args) -> None:
     os.environ["LEROBOT_MAX_ACTION_DIM"] = str(max_action_dim)
     os.environ["LEROBOT_IMAGE_RESIZE"] = str(args.img_resize)
     os.environ["LEROBOT_NORM_MODE"] = str(args.norm_mode)
+    os.environ["LEROBOT_NORM_CLIP"] = "1" if getattr(args, "norm_clip", True) else "0"
     os.environ["LEROBOT_ACTION_FORMAT"] = str(args.action_format)
     os.environ["LEROBOT_STATE_FORMAT"] = str(args.state_format)
     os.environ["LEROBOT_DISCRETE_ACTION_TOKENIZER"] = str(args.discrete_action_tokenizer or "")
