@@ -180,9 +180,26 @@ class _FeatureNormalizer:
     mask: Optional[np.ndarray] = None
     zero_mask: Optional[np.ndarray] = None
     mode: str = "min_max"
+    #: Whether a bounded mode saturates the normalized range at [-1, 1]. On by
+    #: default; off leaves values outside the fitted band in proportion, so the
+    #: 1% tails of a q01_q99 fit train and serve as recorded instead of at the
+    #: band's edge. Ignored by the unbounded modes, which never clipped.
+    clip: bool = True
 
     @classmethod
     def from_stats(
+        cls,
+        stats: Mapping[str, Sequence[float]],
+        mode: str,
+        clip: bool = True,
+    ) -> Optional["_FeatureNormalizer"]:
+        normalizer = cls._from_stats(stats, mode)
+        if normalizer is not None:
+            normalizer.clip = bool(clip)
+        return normalizer
+
+    @classmethod
+    def _from_stats(
         cls,
         stats: Mapping[str, Sequence[float]],
         mode: str,
@@ -263,7 +280,7 @@ class _FeatureNormalizer:
             q_high=self.q_high,
             mode=self.mode,
         )
-        if _uses_bounded_normalized_range(self.mode):
+        if self.clip and _uses_bounded_normalized_range(self.mode):
             normed = np.clip(normed, -1.0, 1.0)
         if self.mask is not None:
             normed = np.where(self.mask, normed, arr)
@@ -277,7 +294,7 @@ class _FeatureNormalizer:
         arr = _to_array(x)
         if arr is None:
             return None
-        if _uses_bounded_normalized_range(self.mode):
+        if self.clip and _uses_bounded_normalized_range(self.mode):
             arr = np.clip(arr, -1.0, 1.0)
         unnorm = _unnormalize_array(
             arr,
@@ -400,6 +417,9 @@ class RobotProcessorConfig(BaseConfig):
 
     metadata_by_tag: Dict[str, Dict[str, Any]] = field(default_factory=dict, metadata={"allow_objects": True})
     norm_mode: str = "min_max"
+    #: Saturate bounded modes at [-1, 1]. Absent from configs written before the
+    #: switch existed, which therefore keep clipping exactly as they trained.
+    norm_clip: bool = True
 
     @property
     def repo_to_tag(self) -> Dict[str, str]:
@@ -493,14 +513,18 @@ class RobotProcessorConfig(BaseConfig):
             state_stats = metadata.get("state_stats")
             if action_stats is not None:
                 try:
-                    norm = _FeatureNormalizer.from_stats(action_stats, mode=self.norm_mode)
+                    norm = _FeatureNormalizer.from_stats(
+                        action_stats, mode=self.norm_mode, clip=self.norm_clip
+                    )
                 except ValueError as exc:
                     raise ValueError(f"Invalid action_stats for tag {tag!r}: {exc}") from exc
                 if norm is not None:
                     action_norms[tag] = norm
             if state_stats is not None:
                 try:
-                    norm = _FeatureNormalizer.from_stats(state_stats, mode=self.norm_mode)
+                    norm = _FeatureNormalizer.from_stats(
+                        state_stats, mode=self.norm_mode, clip=self.norm_clip
+                    )
                 except ValueError as exc:
                     raise ValueError(f"Invalid state_stats for tag {tag!r}: {exc}") from exc
                 if norm is not None:
@@ -608,6 +632,7 @@ class RobotProcessorConfig(BaseConfig):
         tag_metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
         repo_to_tag: Optional[Mapping[str, str]] = None,
         norm_mode: str = "min_max",
+        norm_clip: bool = True,
         data_formatter_add_setup_tokens: bool = False,
         data_formatter_add_control_tokens: bool = False,
     ) -> "RobotProcessorConfig":
@@ -677,6 +702,7 @@ class RobotProcessorConfig(BaseConfig):
         config = cls(
             metadata_by_tag=metadata_by_tag,
             norm_mode=norm_mode,
+            norm_clip=norm_clip,
         )
         config._build_normalizers()
         return config
